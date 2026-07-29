@@ -1,0 +1,11 @@
+{
+    "incident_id": "TRINTECH_INCIDENT_192_168_1_200_1785287785",
+    "timestamp": "2026-07-29 01:16:25 UTC",
+    "attacker_ip": "192.168.1.200",
+    "threat_score": 100,
+    "severity_level": "CRITICAL",
+    "connections_last_min": 5,
+    "unique_ports_scanned": 5,
+    "action_taken": "ISOLATED_IPTABLES_DROP",
+    "handled_by": "TrinTech Digital Defense - Guardian Engine"
+}
