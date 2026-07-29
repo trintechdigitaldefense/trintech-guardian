@@ -14,13 +14,13 @@
 
 ## 🛡️ Overview
 
-**TrinTech Guardian** is a lightweight, autonomous Active Defense Grid and Intrusion Prevention System (IPS) engineered specifically for secure mobile network auditing and real-time threat neutralization. Built to operate seamlessly inside constrained environments (such as Android Termux and Ubuntu PRoot laboratories), Guardian provides enterprise-grade telemetry, behavioral analysis, and automated containment without requiring privileged raw kernel sockets.
+**TrinTech-Guardian** is a lightweight, autonomous Active Defense Grid and Intrusion Prevention System (IPS) engineered specifically for secure mobile network auditing and real-time threat neutralization. Built to operate seamlessly inside constrained environments (such as Android Termux and Ubuntu PRoot laboratories), Guardian provides enterprise-grade telemetry, behavioral analysis, and automated containment without requiring privileged raw kernel sockets.
 
 ---
 
 ## ⚡ Core Architecture & Modules
 
-TrinTech Guardian operates on a modular defense pipeline designed to detect, verify, isolate, and log anomalous network activity instantly:
+TrinTech-Guardian operates on a modular defense pipeline designed to detect, verify, isolate, and log anomalous network activity instantly:
 
 * **`__main__.py` (Orchestration Engine):** Initializes the runtime, boots security layers, and manages the primary event loop.
 * **`stealth.py` (Ghost Node & Anti-Tamper Vault):** Masquerades the process execution state as a benign system daemon (`[systemd-resolved]`) and verifies core script integrity on boot.
