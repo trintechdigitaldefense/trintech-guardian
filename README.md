@@ -1,6 +1,6 @@
 <div align="center">
 
-# TrinTech Guardian
+# TrinTech-Guardian
 ### Autonomous Active Defense Grid & Intrusion Prevention System (IPS)
 
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
