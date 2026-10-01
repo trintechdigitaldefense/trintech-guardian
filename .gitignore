@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+guardian_state.json
+incident_reports/
+*.log
+.env
+.venv/
+venv/
