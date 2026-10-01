@@ -148,7 +148,7 @@ class ContainmentEngine:
         self._iptables_delete(ip_address)
         self.isolated_ips.pop(ip_address, None)
         self._save_state()
-        print(f"[CONTAINMENT] Released {ip_address}")")
+        print(f"[CONTAINMENT] Released {ip_address}")
         return True
 
     def release_all(self) -> int:
