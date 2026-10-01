@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TrinTech-Guardian v1.1.0
+TrinTech-Guardian v1.2.0
 Autonomous Active Defense Grid & Intrusion Prevention System
 TrinTech Digital Defense · Trinidad & Tobago
 
@@ -10,12 +10,13 @@ Usage:
   python3 -m guardian --status         # show current state
   python3 -m guardian --release IP     # release an isolated IP
   python3 -m guardian --threshold 40   # override alert threshold
+  python3 -m guardian --scan-now       # run process scan once and exit
 """
 
 import argparse
 import json
-import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -25,10 +26,13 @@ from .failsafe import FailSafeGuard
 from .containment import ContainmentEngine
 from .forensics import ForensicInvestigator
 from .sniffer import PortSensor
+from .alerting import AlertDispatcher
+from .process_scan import ProcessScanner
+from .deception import DeceptionGrid
 
 
 DEFAULT_CONFIG = {
-    "version": "1.1.0",
+    "version": "1.2.0",
     "dry_run": True,
     "alert_threshold": 50,
     "listen_ports": [21, 22, 23, 80, 443, 3306, 3389, 8080, 8443],
@@ -38,13 +42,25 @@ DEFAULT_CONFIG = {
     "process_name": "[systemd-resolved]",
     "log_dir": "incident_reports",
     "state_file": "guardian_state.json",
-    "webhook_url": None,
     "verbose": True,
+    "alerting": {
+        "enabled": True,
+        "webhook_url": None,
+        "telegram_bot_token": None,
+        "telegram_chat_id": None,
+    },
+    "process_scan": {
+        "enabled": True,
+        "interval_seconds": 30,
+    },
+    "deception": {
+        "enabled": True,
+        "ports": [21, 23, 3306, 6379, 27017],
+    },
 }
 
 
 def load_config(config_path: str = None) -> dict:
-    """Load config.json if present, otherwise use defaults."""
     cfg = DEFAULT_CONFIG.copy()
     candidates = []
     if config_path:
@@ -61,7 +77,11 @@ def load_config(config_path: str = None) -> dict:
             try:
                 with open(path, "r") as f:
                     user_cfg = json.load(f)
-                cfg.update(user_cfg)
+                for k, v in user_cfg.items():
+                    if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+                        cfg[k].update(v)
+                    else:
+                        cfg[k] = v
                 return cfg
             except Exception:
                 continue
@@ -77,7 +97,7 @@ def print_banner(version: str, dry_run: bool):
     print("=" * 56)
 
 
-def threat_handler_factory(core, failsafe, containment, forensics, verbose=True):
+def threat_handler_factory(core, failsafe, containment, forensics, alerter, verbose=True):
     def handler(src_ip: str, dst_port: int):
         if failsafe.is_protected(src_ip):
             if verbose:
@@ -108,10 +128,47 @@ def threat_handler_factory(core, failsafe, containment, forensics, verbose=True)
                 )
                 forensics.generate_snapshot(analysis, action_taken=action)
                 core.reset_score(src_ip)
+
+                alerter.send(
+                    title=f"Threat Contained: {src_ip}",
+                    body=f"Score {analysis['score']} ({analysis['severity']}) — ports hit: {analysis['unique_ports']}",
+                    severity=analysis["severity"],
+                    extra={
+                        "attacker_ip": src_ip,
+                        "action": action,
+                        "hits": analysis["hits_last_min"],
+                    },
+                )
             else:
                 print(f"[!] Containment failed for {src_ip}")
 
     return handler
+
+
+def process_scan_loop(scanner, alerter, forensics, stop_event):
+    while not stop_event.is_set():
+        if scanner.should_scan():
+            findings = scanner.scan()
+            for f in findings:
+                print(f"[PROCESS-SCAN] {f['severity']} pid={f['pid']} — {f['reason']}")
+                print(f"               cmdline: {f['cmdline'][:120]}")
+                alerter.send(
+                    title=f"Suspicious Process (PID {f['pid']})",
+                    body=f"{f['reason']}\n{f['cmdline'][:200]}",
+                    severity=f["severity"],
+                    extra={"pid": f["pid"]},
+                )
+                forensics.generate_snapshot(
+                    {
+                        "source_ip": f"local-pid-{f['pid']}",
+                        "score": 90 if f["severity"] == "CRITICAL" else 60,
+                        "severity": f["severity"],
+                        "hits_last_min": 1,
+                        "unique_ports": 0,
+                    },
+                    action_taken=f"PROCESS_ALERT: {f['reason']}",
+                )
+        stop_event.wait(5)
 
 
 def cmd_status(cfg):
@@ -121,11 +178,21 @@ def cmd_status(cfg):
         cooldown_seconds=cfg["containment_cooldown_seconds"],
     )
     forensics = ForensicInvestigator(log_dir=cfg["log_dir"])
-    print_banner(cfg.get("version", "1.1.0"), cfg["dry_run"])
+    alert_cfg = cfg.get("alerting", {})
+    alerter = AlertDispatcher(
+        webhook_url=alert_cfg.get("webhook_url"),
+        telegram_bot_token=alert_cfg.get("telegram_bot_token"),
+        telegram_chat_id=alert_cfg.get("telegram_chat_id"),
+        enabled=alert_cfg.get("enabled", True),
+    )
+    print_banner(cfg.get("version", "1.2.0"), cfg["dry_run"])
     print("\n[STATUS]")
     print(json.dumps({
         "containment": containment.get_status(),
         "forensics": forensics.get_status(),
+        "alerting": alerter.get_status(),
+        "process_scan": cfg.get("process_scan", {}),
+        "deception": cfg.get("deception", {}),
         "config_threshold": cfg["alert_threshold"],
         "listen_ports": cfg["listen_ports"],
     }, indent=2))
@@ -141,6 +208,22 @@ def cmd_release(cfg, ip: str):
     print(f"Release {'succeeded' if ok else 'failed'} for {ip}")
 
 
+def cmd_scan_now(cfg):
+    ps_cfg = cfg.get("process_scan", {})
+    scanner = ProcessScanner(
+        interval_seconds=ps_cfg.get("interval_seconds", 30),
+        enabled=True,
+    )
+    findings = scanner.scan()
+    if not findings:
+        print("[PROCESS-SCAN] No suspicious processes found.")
+    else:
+        print(f"[PROCESS-SCAN] {len(findings)} finding(s):")
+        for f in findings:
+            print(f"  [{f['severity']}] PID {f['pid']}: {f['reason']}")
+            print(f"             {f['cmdline'][:160]}")
+
+
 def cmd_run(cfg, args):
     if args.live:
         cfg["dry_run"] = False
@@ -151,7 +234,7 @@ def cmd_run(cfg, args):
     if args.ports:
         cfg["listen_ports"] = [int(p) for p in args.ports.split(",")]
 
-    print_banner(cfg.get("version", "1.1.0"), cfg["dry_run"])
+    print_banner(cfg.get("version", "1.2.0"), cfg["dry_run"])
 
     masquerade_process(cfg.get("process_name", "[systemd-resolved]"))
 
@@ -179,16 +262,49 @@ def cmd_run(cfg, args):
     )
     forensics = ForensicInvestigator(log_dir=cfg["log_dir"])
 
+    alert_cfg = cfg.get("alerting", {})
+    alerter = AlertDispatcher(
+        webhook_url=alert_cfg.get("webhook_url"),
+        telegram_bot_token=alert_cfg.get("telegram_bot_token"),
+        telegram_chat_id=alert_cfg.get("telegram_chat_id"),
+        enabled=alert_cfg.get("enabled", True),
+    )
+
     print("[+] Ghost Node          : ENGAGED")
     print("[+] Neural Core         : ONLINE")
     print("[+] Fail-Safe Circuit   : ONLINE")
     print(f"[+] Containment Engine  : ONLINE ({'DRY-RUN' if cfg['dry_run'] else 'LIVE'})")
     print("[+] Forensic Engine     : ONLINE")
+    print(f"[+] Alerting            : {'ONLINE' if alerter.enabled else 'DISABLED'}")
     print(f"[+] Alert Threshold     : {cfg['alert_threshold']}")
 
     handler = threat_handler_factory(
-        core, failsafe, containment, forensics, verbose=cfg.get("verbose", True)
+        core, failsafe, containment, forensics, alerter, verbose=cfg.get("verbose", True)
     )
+
+    dec_cfg = cfg.get("deception", {})
+    deception = DeceptionGrid(
+        ports=dec_cfg.get("ports", [21, 23, 3306, 6379, 27017]),
+        callback=handler,
+        enabled=dec_cfg.get("enabled", True),
+    )
+    deception.start()
+
+    ps_cfg = cfg.get("process_scan", {})
+    scanner = ProcessScanner(
+        interval_seconds=ps_cfg.get("interval_seconds", 30),
+        enabled=ps_cfg.get("enabled", True),
+    )
+    stop_event = threading.Event()
+    if scanner.enabled:
+        t = threading.Thread(
+            target=process_scan_loop,
+            args=(scanner, alerter, forensics, stop_event),
+            daemon=True,
+            name="process-scanner",
+        )
+        t.start()
+        print(f"[+] Process Scanner     : ONLINE (every {scanner.interval}s)")
 
     sensor = PortSensor(
         callback_function=handler,
@@ -200,6 +316,8 @@ def cmd_run(cfg, args):
         sensor.start()
     except KeyboardInterrupt:
         print("\n[*] Guardian shutting down gracefully.")
+        stop_event.set()
+        deception.stop()
         sensor.stop()
         sys.exit(0)
 
@@ -215,6 +333,7 @@ Examples:
   python3 -m guardian --threshold 40 --ports 22,80,443,8080
   python3 -m guardian --status
   python3 -m guardian --release 203.0.113.50
+  python3 -m guardian --scan-now
         """,
     )
     parser.add_argument("--live", action="store_true", help="Enable real containment (iptables/nft)")
@@ -224,6 +343,7 @@ Examples:
     parser.add_argument("--config", type=str, help="Path to config.json")
     parser.add_argument("--status", action="store_true", help="Show current status and exit")
     parser.add_argument("--release", type=str, metavar="IP", help="Release an isolated IP and exit")
+    parser.add_argument("--scan-now", action="store_true", help="Run process scan once and exit")
 
     args = parser.parse_args()
     cfg = load_config(args.config)
@@ -233,6 +353,9 @@ Examples:
         return
     if args.release:
         cmd_release(cfg, args.release)
+        return
+    if args.scan_now:
+        cmd_scan_now(cfg)
         return
 
     cmd_run(cfg, args)
