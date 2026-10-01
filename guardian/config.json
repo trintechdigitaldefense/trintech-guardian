@@ -1,0 +1,18 @@
+{
+  "version": "1.1.0",
+  "dry_run": true,
+  "alert_threshold": 50,
+  "listen_ports": [21, 22, 23, 80, 443, 3306, 3389, 8080, 8443],
+  "whitelist": [
+    "127.0.0.1",
+    "::1",
+    "localhost"
+  ],
+  "auto_detect_local": true,
+  "containment_cooldown_seconds": 300,
+  "process_name": "[systemd-resolved]",
+  "log_dir": "incident_reports",
+  "state_file": "guardian_state.json",
+  "webhook_url": null,
+  "verbose": true
+}
